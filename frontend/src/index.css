@@ -1,0 +1,7 @@
+:root { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; color: #25372d; background: #f5f3ef; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+a { color: inherit; }
+button, input, textarea { font: inherit; }
+a:focus-visible, button:focus-visible { outline: 3px solid #896440; outline-offset: 5px; }
+#page-content:focus { outline: none; }

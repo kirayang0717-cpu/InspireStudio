@@ -1,0 +1,9 @@
+body { margin: 0; background: #f5f3ef; color: #25372d; font-family: system-ui, sans-serif; }
+.connection-page { max-width: 780px; margin: 12vh auto; padding: 32px; }
+.eyebrow { letter-spacing: .15em; font-size: 13px; }
+.connection-page h1 { font-size: clamp(30px, 6vw, 52px); }
+.connection-page section { margin-top: 36px; padding: 28px; background: white; border: 1px solid #ddd; border-radius: 16px; }
+.connection-page button { background: #315f49; color: white; padding: 12px 22px; border: 0; border-radius: 8px; cursor: pointer; }
+.connection-page button:disabled { opacity: .6; cursor: wait; }
+[data-connected="true"] { color: #276444; }
+
