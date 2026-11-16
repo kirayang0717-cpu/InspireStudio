@@ -32,10 +32,10 @@ test('history distinguishes loading, empty, records, isolated-only and read erro
  assert.equal(await state.history[0].clip!.text(),'original')
  }
  assert.deepEqual(await rawRecords(),before)
- await videoHistory('delete','good')
+ await videoHistory('delete','good', (await videoHistory('list'))[0] as {revision:number;revisionToken:string})
  const isolated=await readVideoHistory(()=>videoHistory('list'))
  assert.equal(isolated.status,'success-empty');assert.ok('history' in isolated);assert.equal(isolated.history.diagnostics.rawCount,1)
- await videoHistory('delete','bad')
+ await assert.rejects(videoHistory('delete','bad',{legacy:true}))
 })
 test('open failure and transaction abort are read-error, never successful empty history',async()=>{
  const original=indexedDB.open

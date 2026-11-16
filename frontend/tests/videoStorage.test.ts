@@ -9,5 +9,5 @@ test('video versions retain settings and clip bytes across connections, restore 
  await videoHistory('put',{...r,id:'one',savedAt:new Date().toISOString(),clip})
  await videoHistory('put',{...r,brief:{...r.brief,topic:'第二版'},id:'two',savedAt:new Date().toISOString()})
  const all=await videoHistory('list');assert.equal(all.length,2);const restored=all.find(w=>w.id==='one')!;assert.deepEqual(restored.brief,r.brief);assert.equal(await restored.clip!.text(),'webm-test-bytes')
- await videoHistory('delete','two');assert.equal((await videoHistory('list')).length,1);await videoHistory('delete','one');assert.equal((await videoHistory('list')).length,0)
+ await videoHistory('delete','two', (await videoHistory('list')).find(w=>w.id==='two') as {revision:number;revisionToken:string});assert.equal((await videoHistory('list')).length,1);await videoHistory('delete','one', restored as {revision:number;revisionToken:string});assert.equal((await videoHistory('list')).length,0)
 })

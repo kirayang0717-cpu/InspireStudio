@@ -16,8 +16,10 @@ test('malformed audio/video records are hidden without deleting raw data; invali
  await raw('inspirestudio.'+name+'.v1',{id:'bad',savedAt:42})
  await raw('inspirestudio.'+name+'.v1',{id:'incomplete',savedAt})
  const works=await history('list');assert.equal(works.length,1);assert.ok(works.warning)
- await assert.rejects(history('put',{id:'invalid'} as never))
+ if(name==='video') await assert.rejects(videoHistory('put',{id:'invalid'} as never))
+ else await assert.rejects(audioHistory('put',{id:'invalid'} as never))
  assert.equal((await history('list')).length,1)
- await history('delete','good');assert.equal((await history('list')).length,0);assert.ok((await history('list')).warning)
+ if(name==='video') await videoHistory('delete','good',works[0] as {revision:number;revisionToken:string})
+ else await audioHistory('delete','good');assert.equal((await history('list')).length,0);assert.ok((await history('list')).warning)
  }
 })
