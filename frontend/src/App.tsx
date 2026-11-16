@@ -1,3 +1,4 @@
+import { allowRouteChange } from './leaveGuard'
 import { useEffect, useRef, useState } from 'react'
 import ConnectionStatus from './ConnectionStatus'
 import './App.css'
@@ -19,7 +20,7 @@ export default function App() {
   const [route, setRoute] = useState(getRoute)
   const main = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const change = () => { setRoute(getRoute()); window.scrollTo(0, 0); main.current?.focus() }
+    const change = (event: Event) => { if (!allowRouteChange()) { event.stopImmediatePropagation(); return }; setRoute(getRoute()); window.scrollTo(0, 0); main.current?.focus() }
     window.addEventListener('hashchange', change)
     return () => window.removeEventListener('hashchange', change)
   }, [])

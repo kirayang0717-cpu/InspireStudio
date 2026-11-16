@@ -1,20 +1,22 @@
+import { useLeaveGuard } from './useLeaveGuard'
 import { useEffect, useRef, useState } from 'react'
 import { drawVideo, generateVideo, initialVideo, recordVideo, videoDurations, videoRatios, videoStyles } from './videoService'
 import type { VideoBrief, VideoResult } from './videoService'
 import { videoHistory } from './videoStorage'
 import type { VideoWork } from './videoStorage'
 import './VideoWorkshop.css'
-function Clip({blob}:{blob:Blob}) { const player=useRef<HTMLVideoElement>(null), link=useRef<HTMLAnchorElement>(null);useEffect(()=>{const u=URL.createObjectURL(blob);if(player.current)player.current.src=u;if(link.current)link.current.href=u;return()=>URL.revokeObjectURL(u)},[blob]);return <div><video ref={player} controls /><a ref={link} download="InspireStudio-local-demo.webm">下载本地演示 WebM</a></div> }
+function Clip({blob}:{blob:Blob}) { const [failed,setFailed]=useState<Blob>(); const player=useRef<HTMLVideoElement>(null), link=useRef<HTMLAnchorElement>(null);useEffect(()=>{const u=URL.createObjectURL(blob);if(player.current)player.current.src=u;if(link.current)link.current.href=u;return()=>URL.revokeObjectURL(u)},[blob]);return <div><video ref={player} controls onError={()=>setFailed(blob)} />{failed===blob&&<p role="alert">视频文件无法解码或不受支持。动画设置已保留，可重新录制；历史原件未修改。</p>}<a ref={link} download="InspireStudio-local-demo.webm">下载本地演示 WebM</a></div> }
 export default function VideoWorkshop(){
  const [brief,setBrief]=useState<VideoBrief>({...initialVideo}),[result,setResult]=useState<VideoResult|null>(null),[clip,setClip]=useState<Blob>(),[works,setWorks]=useState<VideoWork[]>([]),[time,setTime]=useState(0),[playing,setPlaying]=useState(false),[busy,setBusy]=useState(false),[recording,setRecording]=useState(false),[dirty,setDirty]=useState(false),[notice,setNotice]=useState('')
+ useLeaveGuard(dirty || busy || JSON.stringify(brief)!==JSON.stringify(result?.brief ?? initialVideo))
  const canvas=useRef<HTMLCanvasElement>(null),abort=useRef<AbortController|null>(null),mounted=useRef(true),topic=useRef<HTMLInputElement>(null)
- useEffect(()=>{mounted.current=true;void videoHistory('list').then(w=>{if(mounted.current)setWorks(w)}).catch(()=>setNotice('无法读取视频历史，请检查浏览器存储。'));return()=>{mounted.current=false;abort.current?.abort()}},[])
+ useEffect(()=>{mounted.current=true;void videoHistory('list').then(w=>{if(mounted.current){setWorks(w);if(w.warning)setNotice(w.warning)}}).catch(()=>setNotice('无法读取视频历史，请检查浏览器存储。'));return()=>{mounted.current=false;abort.current?.abort()}},[])
  useEffect(()=>{if(canvas.current&&result&&!recording)drawVideo(canvas.current,result,time)},[result,time,recording])
  useEffect(()=>{if(!playing||!result)return;const start=performance.now()-time*1000;const timer=setInterval(()=>{const t=Math.min(result.brief.duration,(performance.now()-start)/1000);setTime(t);if(t>=result.brief.duration)setPlaying(false)},40);return()=>clearInterval(timer)},[playing,result,time])
- function confirmReplace(){return !dirty||window.confirm('替换未保存的演示作品？需要保留时请先保存。')}
- function generate(){if(!confirmReplace())return;try{setResult(generateVideo(brief));setClip(undefined);setTime(0);setPlaying(false);setDirty(true);setNotice('已生成本地动态图形模板；非 AI 视频，不含配音。')}catch(e){setNotice(e instanceof Error?e.message:'生成失败。')}}
+ function confirmReplace(){return !(dirty || JSON.stringify(brief)!==JSON.stringify(result?.brief ?? initialVideo))||window.confirm('替换未保存的演示作品？需要保留时请先保存。')}
+ function generate(){if(result&&!confirmReplace())return;try{setResult(generateVideo(brief));setClip(undefined);setTime(0);setPlaying(false);setDirty(true);setNotice('已生成本地动态图形模板；非 AI 视频，不含配音。')}catch(e){setNotice(e instanceof Error?e.message:'生成失败。')}}
  async function exportClip(){if(!result||!canvas.current)return;setPlaying(false);setBusy(true);setRecording(true);const controller=new AbortController();abort.current=controller;try{const blob=await recordVideo(canvas.current,result,controller.signal,t=>{if(mounted.current)setTime(t)});if(mounted.current){setClip(blob);setDirty(true);setNotice('WebM 录制完成，可播放、下载并保存版本。')}}catch(e){if(mounted.current)setNotice(e instanceof Error?e.message:'导出失败。')}finally{if(mounted.current){setBusy(false);setRecording(false)}}}
- async function save(){if(!result)return;setBusy(true);try{const all=await videoHistory('put',{...result,id:crypto.randomUUID(),savedAt:new Date().toISOString(),clip});setWorks(all);setDirty(false);setNotice('已保存生成时的设置与视频文件（如已导出），可刷新后恢复。')}catch{setNotice('保存失败，可能浏览器存储不可用或已满，请先下载备份。')}finally{setBusy(false)}}
+ async function save(){if(!result)return;setBusy(true);try{const all=await videoHistory('put',{...result,id:crypto.randomUUID(),savedAt:new Date().toISOString(),clip});setWorks(all);setDirty(JSON.stringify(brief)!==JSON.stringify(result.brief));setNotice('已保存生成时的设置与视频文件（如已导出），可刷新后恢复。')}catch{setNotice('保存失败，可能浏览器存储不可用或已满，请先下载备份。')}finally{setBusy(false)}}
  function restore(w:VideoWork){if(!confirmReplace())return;setPlaying(false);setBrief({...w.brief});setResult(w);setClip(w.clip);setTime(0);setDirty(false);setNotice('已恢复作品与生成设置，可重新编辑或播放。')}
  async function remove(id:string){if(!window.confirm('删除此视频历史版本？'))return;setBusy(true);try{setWorks(await videoHistory('delete',id));setNotice('已删除所选历史版本。')}catch{setNotice('删除失败，请重试。')}finally{setBusy(false)}}
  const changed=result&&JSON.stringify(brief)!==JSON.stringify(result.brief)

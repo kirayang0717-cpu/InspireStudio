@@ -1,3 +1,5 @@
+import { mutateHistory } from './historyMutation'
+import { useLeaveGuard } from './useLeaveGuard'
 import { useState } from 'react'
 import { contentTypes, demoWritingService } from './writingService'
 import type { WritingBrief } from './writingService'
@@ -18,15 +20,16 @@ export default function WritingWorkshop() {
   const [notice, setNotice] = useState(stored.error || (stored.repaired ? '部分草稿字段已恢复为默认值；原始数据将在下次保存前备份。' : ''))
   const [busy, setBusy] = useState(false)
   const [dirty, setDirty] = useState(false)
+  useLeaveGuard(dirty || busy)
   const update = (key: keyof WritingBrief, value: string) => { setBrief(b => ({ ...b, [key]: value })); setDirty(true) }
-  function persist(next: Version[]) {
-    try { writeVersions(localStorage, next); setVersions(next); return true }
+  async function persist(next: Version[]) {
+    try { const merged = await mutateHistory('inspirestudio.writing.v1', versions, next, 20, () => { const stored = readVersions(localStorage); if (stored.error) throw Error(stored.error); return stored.versions }, items => writeVersions(localStorage, items)); setVersions(merged); return true }
     catch { setNotice('浏览器存储不可用或空间不足，请复制文案备份。'); return false }
   }
-  function save() {
+  async function save() {
     const now = new Date().toISOString()
     const version: Version = { id: crypto.randomUUID(), savedAt: now, createdAt: active?.createdAt ?? now, updatedAt: now, brief: { ...brief }, text }
-    if (persist([version, ...versions].slice(0, 20))) { setActive(version); setHistoryOpen(true); setDirty(false); setNotice('已保存到此浏览器。可在下方草稿与版本中打开，最多保留最近 20 个版本。') }
+    if (await persist([version, ...versions])) { setActive(version); setHistoryOpen(true); setDirty(false); setNotice('已保存到此浏览器。可在下方草稿与版本中打开，最多保留最近 20 个版本。') }
   }
   function restore(version: Version) {
     if (busy || (dirty && !window.confirm('打开此版本会替换未保存内容，继续吗？'))) return

@@ -1,3 +1,4 @@
+import { useLeaveGuard } from './useLeaveGuard'
 import { useEffect, useRef, useState } from 'react'
 import { checkFile, decodeAudio, demoTranscript, encodeWav } from './audioService'
 import { audioHistory, initialAudio } from './audioStorage'
@@ -5,10 +6,11 @@ import type { AudioDraft, AudioMode, AudioWork } from './audioStorage'
 import './AudioWorkshop.css'
 const names = { tts: '文本配音', asr: '语音转写', edit: '声音编辑' }
 function Player({ blob, label }: { blob?: Blob; label: string }) {
+  const [failed, setFailed] = useState<Blob>()
   const audio = useRef<HTMLAudioElement>(null)
   const link = useRef<HTMLAnchorElement>(null)
   useEffect(() => { if (!blob) return; const u = URL.createObjectURL(blob); if (audio.current) audio.current.src = u; if (link.current) link.current.href = u; return () => URL.revokeObjectURL(u) }, [blob])
-  return blob ? <div className="audio-player"><p>{label}</p><audio ref={audio} controls preload="metadata" />{label === '处理后音频' && <a ref={link} download="InspireStudio-edited.wav">下载 WAV</a>}</div> : null
+  return blob ? <div className="audio-player"><p>{label}</p><audio ref={audio} controls preload="metadata" onError={() => setFailed(blob)} />{failed === blob && <p role="alert">音频无法解码或不受支持。文本与参数仍可恢复；请重新导入原始音频。历史原件未修改。</p>}{label === '处理后音频' && <a ref={link} download="InspireStudio-edited.wav">下载 WAV</a>}</div> : null
 }
 export default function AudioWorkshop() {
   const [draft, setDraft] = useState<AudioDraft>({ ...initialAudio })
@@ -18,11 +20,12 @@ export default function AudioWorkshop() {
   const [dirty, setDirty] = useState(false)
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([])
   const [speaking, setSpeaking] = useState(false)
+  useLeaveGuard(dirty || busy)
   const mounted = useRef(true)
   const utterance = useRef<SpeechSynthesisUtterance | null>(null)
   useEffect(() => {
     mounted.current = true
-    void audioHistory('list').then(w => { if (mounted.current) setWorks(w) }).catch(e => { if (mounted.current) setNotice(e.message) })
+    void audioHistory('list').then(w => { if (mounted.current) { setWorks(w); if(w.warning) setNotice(w.warning) } }).catch(e => { if (mounted.current) setNotice(e.message) })
     const synth = window.speechSynthesis
     const refresh = () => setVoices(synth ? synth.getVoices().filter(v => v.localService) : [])
     refresh(); synth?.addEventListener('voiceschanged', refresh)
