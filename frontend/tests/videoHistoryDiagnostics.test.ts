@@ -1,4 +1,8 @@
 import 'fake-indexeddb/auto'
+import { IDBFactory } from 'fake-indexeddb'
+import { createHistoryRefresh } from '../src/videoHistorySync.ts'
+import type { VideoHistoryState } from '../src/videoHistoryState.ts'
+import type { VideoHistoryList } from '../src/videoStorage.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { videoHistory, videoValidationReasons } from '../src/videoStorage.ts'
@@ -50,4 +54,23 @@ test('open failure and transaction abort are read-error, never successful empty 
  }
  try {const state=await readVideoHistory(()=>videoHistory('list'));assert.equal(state.status,'read-error');assert.ok('message' in state);assert.match(state.message,/读取失败|事务已取消/)} finally {IDBDatabase.prototype.transaction=transaction}
  const recovered=await readVideoHistory(()=>videoHistory('list'));assert.equal(recovered.status,'success-empty')
+})
+
+test('refresh read failure keeps last valid history and diagnostics, then recovers',async()=>{
+ globalThis.indexedDB=new IDBFactory()
+ const v={...generateVideo({...initialVideo,topic:'sync',description:'description'}),id:'sync',savedAt:new Date().toISOString(),clip:new Blob(['original'],{type:'video/webm'})}
+ await videoHistory('put',v)
+ const db=await database()
+ await new Promise<void>((resolve,reject)=>{const tx=db.transaction('works','readwrite');tx.objectStore('works').put({id:'bad'});tx.oncomplete=()=>resolve();tx.onabort=()=>reject(tx.error)});db.close()
+ let history: VideoHistoryList|undefined, state: VideoHistoryState={status:'loading'},reads=0,errors=0
+ const original=indexedDB.open
+ const sync=createHistoryRefresh({read:()=>videoHistory('list'),subscribe:()=>()=>{},delayMs:0,
+  onHistory:next=>{history=next;state={status:'success-with-records',history:next};reads++},onError:()=>{state={status:'read-error',message:'read failed'};errors++}})
+ const until=async(check:()=>boolean)=>{for(let i=0;i<200;i++){if(check())return;await new Promise(r=>setTimeout(r,2))}assert.fail('refresh timed out')}
+ try {
+  await until(()=>reads===1);const previous=history!;assert.equal(previous.diagnostics.quarantinedCount,1)
+  indexedDB.open=()=>{throw Error('unavailable')};sync.request();await until(()=>errors===1)
+  assert.equal(state.status,'read-error');assert.equal(history,previous);assert.equal(await history![0].clip!.text(),'original')
+  indexedDB.open=original;sync.request();await until(()=>reads===2);assert.equal(history!.diagnostics.quarantinedCount,1)
+ }finally{indexedDB.open=original;sync.dispose()}
 })

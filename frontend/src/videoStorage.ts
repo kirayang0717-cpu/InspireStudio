@@ -1,3 +1,4 @@
+import { videoHistoryBus } from './videoHistorySync.ts'
 import { record, finite, metadata, media, safeHistory } from './historyValidation.ts'
 import type { HistoryList } from './historyValidation.ts'
 import type { VideoBrief, VideoResult } from './videoService.ts'
@@ -73,6 +74,7 @@ export async function videoHistory(action: 'list' | 'put' | 'update' | 'delete',
     let failure: Error | undefined
     const read = () => { request = store.getAll() }
     tx.oncomplete = () => {
+      if (action !== 'list') videoHistoryBus.publish(action === 'put' ? 'create' : action, typeof input === 'string' ? input : input!.id)
       try { const raw = request!.result
         const failures = raw.flatMap((v,index) => { const reasons=videoValidationReasons(v); return reasons.length ? [{index,reasons}] : [] })
         const all = safeHistory(raw, validVideo) as VideoHistoryList

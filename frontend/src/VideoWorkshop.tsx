@@ -1,28 +1,104 @@
 import { useLeaveGuard } from './useLeaveGuard'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { drawVideo, generateVideo, initialVideo, recordVideo, videoDurations, videoRatios, videoStyles } from './videoService'
 import type { VideoBrief, VideoResult } from './videoService'
 import { videoHistory, videoExpectedVersion } from './videoStorage'
 import type { VideoWork } from './videoStorage'
-import { readVideoHistory, historyHeading } from './videoHistoryState'
+import { historyHeading } from './videoHistoryState'
 import type { VideoHistoryState } from './videoHistoryState'
+import { createHistoryRefresh, createHistoryReadGate, videoHistoryBus, traceVideoMedia, videoMediaDiagnosticsEnabled, videoMediaObjectId } from './videoHistorySync'
+import type { VideoHistoryList } from './videoStorage'
 import './VideoWorkshop.css'
-function Clip({blob}:{blob:Blob}) { const [failed,setFailed]=useState<Blob>(); const player=useRef<HTMLVideoElement>(null), link=useRef<HTMLAnchorElement>(null);useEffect(()=>{const u=URL.createObjectURL(blob);if(player.current)player.current.src=u;if(link.current)link.current.href=u;return()=>URL.revokeObjectURL(u)},[blob]);return <div><video ref={player} controls onError={()=>setFailed(blob)} />{failed===blob&&<p role="alert">视频文件无法解码或不受支持。动画设置已保留，可重新录制；历史原件未修改。</p>}<a ref={link} download="InspireStudio-local-demo.webm">下载本地演示 WebM</a></div> }
+const historyGate=createHistoryReadGate<VideoHistoryList>()
+function mediaSnapshot(node: HTMLVideoElement | null) {
+ if (!node) return {nodeId:null}
+ const quality = node.getVideoPlaybackQuality?.()
+ return {nodeId:videoMediaObjectId(node),connected:node.isConnected,src:node.src,currentSrc:node.currentSrc,
+  currentTime:node.currentTime,duration:Number.isFinite(node.duration)?node.duration:String(node.duration),paused:node.paused,
+  readyState:node.readyState,networkState:node.networkState,videoWidth:node.videoWidth,videoHeight:node.videoHeight,
+  error:node.error?{code:node.error.code,message:node.error.message}:null,
+  totalVideoFrames:quality?.totalVideoFrames,droppedVideoFrames:quality?.droppedVideoFrames}
+}
+function mediaIdentity(clipId:string,blob:Blob) {
+ return {clipId,blobId:videoMediaObjectId(blob),blobSize:blob.size,blobType:blob.type}
+}
+function Clip({blob}:{blob:Blob}) {
+ const [failed,setFailed]=useState<Blob>()
+ const player=useRef<HTMLVideoElement>(null),link=useRef<HTMLAnchorElement>(null)
+ const instance=useId()
+ const observed=useRef<HTMLVideoElement|null>(null),previousBlob=useRef<Blob>(blob),detach=useRef<()=>void>(()=>{})
+ traceVideoMedia('clip.render',()=>mediaIdentity(instance,blob))
+ // Observation is attached before the existing passive effect assigns src.
+ useLayoutEffect(()=>{
+  if (!videoMediaDiagnosticsEnabled()) return
+  const node=player.current
+  traceVideoMedia('clip.commit',()=>({...mediaIdentity(instance,blob),...mediaSnapshot(node),previousNodeId:observed.current?videoMediaObjectId(observed.current):null,
+   nodeChanged:observed.current!==node,blobChanged:previousBlob.current!==blob}))
+  previousBlob.current=blob
+  if (observed.current===node) return
+  detach.current();observed.current=node
+  if (!node) return
+  let lastTimeUpdate=-Infinity
+  const events=['pause','play','playing','waiting','stalled','loadstart','loadedmetadata','loadeddata','canplay','emptied','abort','error','ended','seeking','seeked','suspend','resize','timeupdate']
+  const listener=(event:Event)=>{
+   if(event.type==='timeupdate'){const now=performance.now();if(now-lastTimeUpdate<1000)return;lastTimeUpdate=now}
+   traceVideoMedia('media.'+event.type,()=>({...mediaIdentity(instance,previousBlob.current),...mediaSnapshot(node)}))
+  }
+  events.forEach(event=>node.addEventListener(event,listener))
+  const observer=new MutationObserver(records=>{
+   traceVideoMedia('media.dom-mutation',()=>({...mediaIdentity(instance,previousBlob.current),...mediaSnapshot(node),mutations:records.map(record=>({type:record.type,attribute:record.attributeName,oldValue:record.oldValue})),
+    currentNodeId:player.current?videoMediaObjectId(player.current):null}))
+  })
+  observer.observe(node,{attributes:true,attributeFilter:['src'],attributeOldValue:true})
+  if(node.parentElement)observer.observe(node.parentElement,{childList:true})
+  detach.current=()=>{events.forEach(event=>node.removeEventListener(event,listener));observer.disconnect()}
+ })
+ useLayoutEffect(()=>{
+  const node=player.current
+  traceVideoMedia('clip.mount',()=>({...mediaIdentity(instance,previousBlob.current),...mediaSnapshot(node)}))
+  return()=>{traceVideoMedia('clip.unmount',()=>({...mediaIdentity(instance,previousBlob.current),...mediaSnapshot(node)}));detach.current();observed.current=null}
+ },[instance])
+ useEffect(()=>{
+  const node=player.current
+  const u=URL.createObjectURL(blob)
+  traceVideoMedia('url.create',()=>({...mediaIdentity(instance,blob),url:u,...mediaSnapshot(node),stack:new Error('Object URL create location').stack}))
+  if(player.current)player.current.src=u
+  if(link.current)link.current.href=u
+  traceVideoMedia('url.assigned',()=>({...mediaIdentity(instance,blob),url:u,...mediaSnapshot(node)}))
+  return()=>{
+   traceVideoMedia('url.revoke',()=>({...mediaIdentity(instance,blob),url:u,...mediaSnapshot(node),stack:new Error('Object URL cleanup location').stack}))
+   URL.revokeObjectURL(u)
+  }
+ },[blob,instance])
+ return <div><video ref={player} controls onError={()=>setFailed(blob)} />{failed===blob&&<p role="alert">视频文件无法解码或不受支持。动画设置已保留，可重新录制；历史原件未修改。</p>}<a ref={link} download="InspireStudio-local-demo.webm">下载本地演示 WebM</a></div>
+}
 export default function VideoWorkshop(){
  const [brief,setBrief]=useState<VideoBrief>({...initialVideo}),[result,setResult]=useState<VideoResult|null>(null),[clip,setClip]=useState<Blob>(),[works,setWorks]=useState<VideoWork[]>([]),[time,setTime]=useState(0),[playing,setPlaying]=useState(false),[busy,setBusy]=useState(false),[recording,setRecording]=useState(false),[dirty,setDirty]=useState(false),[notice,setNotice]=useState('')
  const [historyState,setHistoryState]=useState<VideoHistoryState>({status:'loading'})
- function acceptHistory(history: Awaited<ReturnType<typeof videoHistory>>) {setWorks(history);setHistoryState({status:history.length?'success-with-records':'success-empty',history})}
+ const historySync=useRef<ReturnType<typeof createHistoryRefresh<VideoHistoryList>> | null>(null)
  useLeaveGuard(dirty || busy || JSON.stringify(brief)!==JSON.stringify(result?.brief ?? initialVideo))
  const canvas=useRef<HTMLCanvasElement>(null),abort=useRef<AbortController|null>(null),mounted=useRef(true),topic=useRef<HTMLInputElement>(null)
- useEffect(()=>{mounted.current=true;void readVideoHistory(()=>videoHistory('list')).then(state=>{if(mounted.current){setHistoryState(state);if('history' in state)setWorks(state.history)}});return()=>{mounted.current=false;abort.current?.abort()}},[])
+ useEffect(()=>{
+  mounted.current=true
+  const sync=createHistoryRefresh({read:()=>videoHistory('list'),subscribe:listener=>videoHistoryBus.subscribe(listener),gate:historyGate,
+   onHistory:history=>{traceVideoMedia('history.react-update.request',()=>({count:history.length,rawCount:history.diagnostics.rawCount}));setWorks(history);setHistoryState({status:history.length?'success-with-records':'success-empty',history})},
+   onError:error=>setHistoryState({status:'read-error',message:error instanceof Error?error.message:'无法读取视频历史，原始数据保留。'})})
+  historySync.current=sync
+  const visible=()=>{traceVideoMedia('page.visibility',()=>({visibility:document.visibilityState}));if(document.visibilityState==='visible')sync.request()}
+  const resume=()=>sync.request()
+  document.addEventListener('visibilitychange',visible);window.addEventListener('pageshow',resume)
+  return()=>{sync.dispose();if(historySync.current===sync)historySync.current=null;document.removeEventListener('visibilitychange',visible);window.removeEventListener('pageshow',resume);mounted.current=false;abort.current?.abort()}
+ },[])
+ useLayoutEffect(()=>{traceVideoMedia('history.react-update.commit',()=>({count:works.length,status:historyState.status}))},[works,historyState])
+ useLayoutEffect(()=>{historySync.current?.setPaused(busy||recording)},[busy,recording])
  useEffect(()=>{if(canvas.current&&result&&!recording)drawVideo(canvas.current,result,time)},[result,time,recording])
  useEffect(()=>{if(!playing||!result)return;const start=performance.now()-time*1000;const timer=setInterval(()=>{const t=Math.min(result.brief.duration,(performance.now()-start)/1000);setTime(t);if(t>=result.brief.duration)setPlaying(false)},40);return()=>clearInterval(timer)},[playing,result,time])
  function confirmReplace(){return !(dirty || JSON.stringify(brief)!==JSON.stringify(result?.brief ?? initialVideo))||window.confirm('替换未保存的演示作品？需要保留时请先保存。')}
  function generate(){if(result&&!confirmReplace())return;try{setResult(generateVideo(brief));setClip(undefined);setTime(0);setPlaying(false);setDirty(true);setNotice('已生成本地动态图形模板；非 AI 视频，不含配音。')}catch(e){setNotice(e instanceof Error?e.message:'生成失败。')}}
  async function exportClip(){if(!result||!canvas.current)return;setPlaying(false);setBusy(true);setRecording(true);const controller=new AbortController();abort.current=controller;try{const blob=await recordVideo(canvas.current,result,controller.signal,t=>{if(mounted.current)setTime(t)});if(mounted.current){setClip(blob);setDirty(true);setNotice('WebM 录制完成，可播放、下载并保存版本。')}}catch(e){if(mounted.current)setNotice(e instanceof Error?e.message:'导出失败。')}finally{if(mounted.current){setBusy(false);setRecording(false)}}}
- async function save(){if(!result)return;setBusy(true);try{const all=await videoHistory('put',{...result,id:crypto.randomUUID(),savedAt:new Date().toISOString(),clip});acceptHistory(all);setDirty(JSON.stringify(brief)!==JSON.stringify(result.brief));setNotice('已保存生成时的设置与视频文件（如已导出），可刷新后恢复。')}catch{setNotice('保存失败，可能浏览器存储不可用或已满，请先下载备份。')}finally{setBusy(false)}}
+ async function save(){if(!result)return;setBusy(true);historySync.current?.setPaused(true);try{await videoHistory('put',{...result,id:crypto.randomUUID(),savedAt:new Date().toISOString(),clip});setDirty(JSON.stringify(brief)!==JSON.stringify(result.brief));setNotice('已保存生成时的设置与视频文件（如已导出），可刷新后恢复。')}catch{setNotice('保存失败，可能浏览器存储不可用或已满，请先下载备份。')}finally{historySync.current?.request();historySync.current?.setPaused(false);setBusy(false)}}
  function restore(w:VideoWork){if(!confirmReplace())return;setPlaying(false);setBrief({...w.brief});setResult(w);setClip(w.clip);setTime(0);setDirty(false);setNotice('已恢复作品与生成设置，可重新编辑或播放。')}
- async function remove(work:VideoWork){if(!window.confirm('删除此视频历史版本？'))return;setBusy(true);try{acceptHistory(await videoHistory('delete',work.id,videoExpectedVersion(work)));setNotice('已删除所选历史版本。')}catch{setNotice('删除失败，请重试。')}finally{setBusy(false)}}
+ async function remove(work:VideoWork){if(!window.confirm('删除此视频历史版本？'))return;setBusy(true);historySync.current?.setPaused(true);try{await videoHistory('delete',work.id,videoExpectedVersion(work));setNotice('已删除所选历史版本。')}catch{setNotice('删除失败，请重试。')}finally{historySync.current?.request();historySync.current?.setPaused(false);setBusy(false)}}
  const changed=result&&JSON.stringify(brief)!==JSON.stringify(result.brief)
  return <section className="video-workshop" aria-labelledby="video-title"><header className="video-heading"><div><p className="kicker">VIDEO STUDIO / 04</p><h1 id="video-title">让灵感，流动起来。</h1><p>从一个念头，走向一段有节奏的表达。</p></div><span>本地模板演示 · AI 未连接</span></header><p className="video-note">当前将主题与描述排入动态图形模板，不理解提示词、不生成实景、不调用 AI。三段动画共享所选总时长，无配音。导出为 WebM，尚不支持 MP4。</p>
  <div className="video-layout"><form className="video-panel" onSubmit={e=>{e.preventDefault();generate()}}><h2>01 / 描述你的故事</h2><fieldset disabled={busy}><label>主题（必填）<input ref={topic} required maxLength={120} value={brief.topic} onChange={e=>setBrief({...brief,topic:e.target.value})}/></label><label>创意描述（必填）<textarea required maxLength={2000} rows={6} value={brief.description} onChange={e=>setBrief({...brief,description:e.target.value})} placeholder="例如：春日读书会，以柔和色彩呈现安静的阅读时光。模板仅展示文字与图形。"/></label><label>视频风格<select value={brief.style} onChange={e=>setBrief({...brief,style:e.target.value})}>{videoStyles.map(s=><option key={s}>{s}</option>)}</select></label><label>画面比例<select value={brief.ratio} onChange={e=>setBrief({...brief,ratio:e.target.value})}>{videoRatios.map(s=><option key={s}>{s}</option>)}</select></label><label>视频时长<select value={brief.duration} onChange={e=>setBrief({...brief,duration:Number(e.target.value)})}>{videoDurations.map(s=><option key={s} value={s}>{s} 秒</option>)}</select></label><button className="video-primary" disabled={!brief.topic.trim()||!brief.description.trim()} type="submit">{result?'重新生成本地演示':'生成本地视频演示'} ↗</button></fieldset></form>

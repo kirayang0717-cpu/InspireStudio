@@ -1,12 +1,24 @@
 import 'fake-indexeddb/auto'
 import { IDBFactory } from 'fake-indexeddb'
-import { test, beforeEach } from 'node:test'
+import { test, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { videoHistory, videoExpectedVersion } from '../src/videoStorage.ts'
+import type { HistoryMessage } from '../src/videoHistorySync.ts'
 import type { VideoExpectedVersion, VideoWork } from '../src/videoStorage.ts'
 import { generateVideo, initialVideo } from '../src/videoService.ts'
 
-beforeEach(async()=>{ globalThis.indexedDB = new IDBFactory(); await videoHistory('list') })
+const nativeBroadcastChannel=globalThis.BroadcastChannel
+let notifications: HistoryMessage[]=[]
+beforeEach(async()=>{
+ notifications=[]
+ globalThis.BroadcastChannel=class {
+  onmessage=null;onmessageerror=null
+  postMessage(message: HistoryMessage){notifications.push(structuredClone(message))}
+  close(){}
+ } as unknown as typeof BroadcastChannel
+ globalThis.indexedDB = new IDBFactory(); await videoHistory('list')
+})
+afterEach(()=>{globalThis.BroadcastChannel=nativeBroadcastChannel})
 
 const work = (id: string, label = 'original'): VideoWork => ({...generateVideo({...initialVideo,topic:label,description:'description'}),id,savedAt:new Date().toISOString(),clip:new Blob([new Uint8Array([0,255,128,1]),label,'完整内容'],{type:'video/webm'})})
 async function connect() {
@@ -114,7 +126,7 @@ test('malformed version pairs are quarantined and never rewritten or deleted',as
 test('abort after successful add request never reports success or persists data',async()=>{
  const original=IDBObjectStore.prototype.add
  IDBObjectStore.prototype.add=function(...args: Parameters<IDBObjectStore['add']>) {const r=original.apply(this,args);r.addEventListener('success',()=>this.transaction.abort());return r}
- try {await assert.rejects(videoHistory('put',work('aborted')),/取消|失败/)} finally {IDBObjectStore.prototype.add=original}
+ try {await assert.rejects(videoHistory('put',work('aborted')),/取消|失败/);assert.equal(notifications.length,0)} finally {IDBObjectStore.prototype.add=original}
  assert.equal(await raw('aborted'),undefined)
 })
 test('independent connections creating different IDs retain both records and Blob bytes',async()=>{
@@ -140,8 +152,10 @@ test('abort after update or delete request rolls back and rejects',async()=>{
    const r=Reflect.apply(original,this,args) as IDBRequest
    r.addEventListener('success',()=>this.transaction.abort());return r
   }})
+  const noticeCount=notifications.length
   try {await assert.rejects(action==='update'?videoHistory('update',v,version(old)):videoHistory('delete',v.id,version(old)))}
   finally {Object.defineProperty(IDBObjectStore.prototype,method,{configurable:true,writable:true,value:original})}
+  assert.equal(notifications.length,noticeCount)
   assert.deepEqual(await raw(v.id),old)
   assert.deepEqual(await (await saved(v.id)).clip!.arrayBuffer(),await old.clip!.arrayBuffer())
  }
@@ -264,4 +278,47 @@ test('aborted whitelisted update preserves metadata, extensions and original med
  finally {IDBObjectStore.prototype.put=original}
  assert.deepEqual(await raw(v.id),v)
  assert.deepEqual(await (await saved(v.id)).clip!.arrayBuffer(),await v.clip!.arrayBuffer())
+})
+
+test('create/update/delete notify only after complete, list never notifies, payload has only protocol fields',async()=>{
+ const original=IDBDatabase.prototype.transaction
+ let completed=false
+ IDBDatabase.prototype.transaction=function(...args: Parameters<IDBDatabase['transaction']>){
+  const tx=original.apply(this,args);if(args[1]==='readwrite'){completed=false;tx.addEventListener('complete',()=>{completed=true})}return tx
+ }
+ const Channel=globalThis.BroadcastChannel
+ globalThis.BroadcastChannel=class {onmessage=null;onmessageerror=null;close(){};postMessage(message: HistoryMessage){assert.equal(completed,true);notifications.push(message)}} as unknown as typeof BroadcastChannel
+ try {
+  const v=work('notify');await videoHistory('put',v);assert.equal(notifications.length,1)
+  const first=await saved(v.id);assert.equal(notifications.length,1)
+  await videoHistory('update',{id:v.id,brief:{topic:'updated'}},version(first));assert.equal(notifications.length,2)
+  await videoHistory('delete',v.id,version(await saved(v.id)));assert.equal(notifications.length,3)
+  assert.deepEqual(notifications.map(m=>m.operation),['create','update','delete'])
+  assert.equal(new Set(notifications.map(m=>m.eventId)).size,3)
+  for(const event of notifications){assert.equal(event.workId,v.id);assert.deepEqual(Object.keys(event).sort(),['eventId','operation','protocol','senderId','version','workId']);assert.equal(event.version,1);assert.equal(event.protocol,'inspirestudio.video.history')}
+ }finally{IDBDatabase.prototype.transaction=original;globalThis.BroadcastChannel=Channel}
+})
+test('conflicts, missing records, invalid writes and ID collisions never notify',async()=>{
+ const v=work('failed-notify');await videoHistory('put',v);const first=await saved(v.id)
+ await videoHistory('update',{id:v.id,seed:2},version(first));const count=notifications.length
+ await assert.rejects(videoHistory('update',{id:v.id,seed:3},version(first)))
+ await assert.rejects(videoHistory('delete',v.id,version(first)))
+ await assert.rejects(videoHistory('put',v))
+ await assert.rejects(videoHistory('update',{id:v.id,seed:NaN},version(await saved(v.id))))
+ await assert.rejects(videoHistory('delete','missing',{legacy:true}))
+ await assert.rejects(videoHistory('put',{...v,id:''}))
+ assert.equal(notifications.length,count);assert.equal((await saved(v.id)).seed,2)
+})
+test('absent, constructor-failing or send-failing channel never fails committed storage',async()=>{
+ for(const mode of ['absent','construct','send']) {
+  globalThis.BroadcastChannel=(mode==='absent'?undefined:class {
+   onmessage=null;onmessageerror=null
+   constructor(){if(mode==='construct')throw Error('unsupported')}
+   postMessage(){throw Error('notification failed')}
+   close(){}
+  }) as unknown as typeof BroadcastChannel
+  const v=work('fallback-'+mode);await videoHistory('put',v);const first=await saved(v.id)
+  await videoHistory('update',{id:v.id,seed:5},version(first));const updated=await saved(v.id);assert.equal(updated.seed,5)
+  await videoHistory('delete',v.id,version(updated));assert.equal(await raw(v.id),undefined)
+ }
 })
